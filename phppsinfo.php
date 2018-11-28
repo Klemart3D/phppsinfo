@@ -5,8 +5,8 @@ class PhpPsInfo
     protected $login;
     protected $password;
 
-    const DEFAULT_PASSWORD = 'prestashop';
-    const DEFAULT_LOGIN = 'prestashop';
+    const DEFAULT_PASSWORD = '';
+    const DEFAULT_LOGIN = '';
 
     const TYPE_OK = true;
     const TYPE_ERROR = false;
