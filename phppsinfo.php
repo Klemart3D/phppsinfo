@@ -5,30 +5,40 @@ class PhpPsInfo
     protected $login;
     protected $password;
 
-    const DEFAULT_PASSWORD = '';
-    const DEFAULT_LOGIN = '';
+    const DEFAULT_PASSWORD = 'prestashop';
+    const DEFAULT_LOGIN = 'prestashop';
 
     const TYPE_OK = true;
     const TYPE_ERROR = false;
     const TYPE_WARNING = null;
 
+    const TYPE_SUCCESS_CLASS = 'table-success';
+    const TYPE_ERROR_CLASS = 'table-danger';
+    const TYPE_INFO_CLASS = 'table-info';
+    const TYPE_WARNING_CLASS = 'table-warning';
+
     protected $requirements = [
         'versions' => [
-            'php' => '5.6',
+            'php' => '7.1',
             'mysql' => '5.5',
+            'prestashop' => '8.0',
         ],
         'extensions' => [
+            'bcmath' => false,
             'curl' => true,
             'dom' => true,
             'fileinfo' => true,
             'gd' => true,
+            'iconv' => true,
             'imagick' => false,
             'intl' => true,
             'json' => true,
-            'openssl' => true,
+            'mbstring' => true,
             'memcache' => false,
             'memcached' => false,
+            'openssl' => true,
             'pdo_mysql' => true,
+            'simplexml' => true,
             'zip' => true,
         ],
         'config' => [
@@ -52,31 +62,40 @@ class PhpPsInfo
             'translations_dir' => 'translations',
             'customizable_products_dir' => 'upload',
             'virtual_products_dir' => 'download',
+            'override_dir' => 'override',
             'config_sf2_dir' => 'app/config',
             'translations_sf2' => 'app/Resources/translations',
         ],
         'apache_modules' => [
-            'mod_rewrite' => true,
+            'mod_alias' => false,
+            'mod_env' => false,
+            'mod_headers' => false,
+            'mod_rewrite' => false,
         ],
     ];
 
     protected $recommended = [
         'versions' => [
-            'php' => '7.1',
-            'mysql' => '5.6',
+            'php' => '8.1',
+            'mysql' => '8.0',
+            'prestashop' => '9.0',
         ],
         'extensions' => [
+            'bcmath' => true,
             'curl' => true,
             'dom' => true,
             'fileinfo' => true,
             'gd' => true,
+            'iconv' => true,
             'imagick' => true,
             'intl' => true,
             'json' => true,
-            'openssl' => true,
+            'mbstring' => true,
             'memcache' => false,
             'memcached' => true,
+            'openssl' => true,
             'pdo_mysql' => true,
+            'simplexml' => true,
             'zip' => true,
         ],
         'config' => [
@@ -92,6 +111,9 @@ class PhpPsInfo
             'upload_max_filesize' => '128M',
         ],
         'apache_modules' => [
+            'mod_alias' => false,
+            'mod_env' => true,
+            'mod_headers' => true,
             'mod_rewrite' => true,
         ],
     ];
@@ -104,20 +126,24 @@ class PhpPsInfo
      *
      * @param string $login    Login
      * @param string $password Password
-     *
      */
     public function __construct($login = self::DEFAULT_LOGIN, $password = self::DEFAULT_PASSWORD)
     {
-        if (!empty($_SERVER['PS_INFO_LOGIN'])) {
-            $this->login = $_SERVER['PS_INFO_LOGIN'];
+        $this->login = $_SERVER['PS_INFO_LOGIN'] ?? $login;
+        $this->password = $_SERVER['PS_INFO_PASSWORD'] ?? $password;
+
+        // Detect installed PrestaShop and set PHP required/recommended accordingly
+        if (method_exists($this, 'getPrestaShopVersion')) {
+            $psv = $this->getPrestaShopVersion();
+            if (is_string($psv) && preg_match('~^\d+\.\d+(\.\d+)?$~', $psv)) {
+                $php = $this->getPhpSupportForPs($psv);
+                if ($php) {
+                    $this->requirements['versions']['php'] = $php['min'];
+                    $this->recommended['versions']['php'] = $php['rec'];
+                }
+            }
         }
 
-        if (!empty($_SERVER['PS_INFO_PASSWORD'])) {
-            $this->password = $_SERVER['PS_INFO_PASSWORD'];
-        }
-
-        $this->login = !empty($login) ? $login : $this->login;
-        $this->password = !empty($password) ? $password : $this->password;
     }
 
     /**
@@ -125,21 +151,87 @@ class PhpPsInfo
      */
     public function checkAuth()
     {
-        if (PHP_SAPI === 'cli' ||
-            empty($this->login)
-        ) {
-            return;
+        if (PHP_SAPI === 'cli') { return; }
+        if (empty($this->login) || empty($this->password)) {
+            header('HTTP/1.1 403 Forbidden'); exit(403);
+        }
+        $u = $_SERVER['PHP_AUTH_USER'] ?? '';
+        $p = $_SERVER['PHP_AUTH_PW'] ?? '';
+        if (!hash_equals($this->login, $u) || !hash_equals($this->password, $p)) {
+            header('WWW-Authenticate: Basic realm="Presta Info"');
+            header('HTTP/1.0 401 Unauthorized'); echo '401 Unauthorized'; exit(401);
+        }
+    }
+
+    /**
+     * Get current PrestaShop version
+     * Order: via DB, via settings.inc.php, via defines.inc.php else "Unknown"
+     */
+    public function getPrestaShopVersion()
+    {
+        //return '1.6.1.23';
+
+        // 1) Via DB (PS 1.6/1.7/8)
+        $db =  $host = $name = $user = $pass = $prefix = null;
+
+        // PS >= 1.7 / 8: app/config/parameters.php
+        $parametersFile = getcwd() . '/app/config/parameters.php';
+        if (file_exists($parametersFile)) {
+            $params = include $parametersFile;
+            if (is_array($params) && isset($params['parameters'])) {
+                $p = $params['parameters'];
+                $host = $p['database_host'] ?? null;
+                $name = $p['database_name'] ?? null;
+                $user = $p['database_user'] ?? null;
+                $pass = $p['database_password'] ?? null;
+                $prefix = $p['database_prefix'] ?? 'ps_';
+            }
         }
 
-        if (!isset($_SERVER['PHP_AUTH_USER']) ||
-            $_SERVER['PHP_AUTH_PW'] != $this->password ||
-            $_SERVER['PHP_AUTH_USER'] != $this->login
-        ) {
-            header('WWW-Authenticate: Basic realm="Authentification"');
-            header('HTTP/1.0 401 Unauthorized');
-            echo '401 Unauthorized';
-            exit(401);
+        // PS 1.6: config/settings.inc.php
+        if (!$host && file_exists(getcwd() . '/config/settings.inc.php')) {
+            include getcwd() . '/config/settings.inc.php';
+            if (defined('_DB_SERVER_')) {
+                $host = _DB_SERVER_;
+                $name = _DB_NAME_;
+                $user = _DB_USER_;
+                $pass = _DB_PASSWD_;
+                $prefix = defined('_DB_PREFIX_') ? _DB_PREFIX_ : 'ps_';
+            }
         }
+
+        if ($host && $name && $user) {
+            $db = @mysqli_connect($host, $user, $pass, $name);
+            if ($db) {
+                $sql = sprintf(
+                    "SELECT value FROM `%sconfiguration` WHERE name IN ('PS_INSTALL_VERSION','PS_VERSION_DB') ORDER BY FIELD(name,'PS_INSTALL_VERSION','PS_VERSION_DB') LIMIT 1",
+                    $prefix
+                );
+                if ($res = @mysqli_query($db, $sql)) {
+                    if ($row = mysqli_fetch_row($res)) {
+                        @mysqli_close($db);
+                        return $row[0];
+                    }
+                }
+                @mysqli_close($db);
+            }
+        }
+
+        // 2) Fallback: read _PS_VERSION_ constant in defines.inc.php
+        $candidates = [
+            getcwd() . '/config/defines.inc.php',
+            getcwd() . '/app/config/defines.inc.php',
+        ];
+        foreach ($candidates as $file) {
+            if (file_exists($file)) {
+                $content = @file_get_contents($file);
+                if ($content && preg_match("/define\\s*\\(\\s*['_\"]_PS_VERSION_['_\"]\\s*,\\s*['_\"]([^'_\\\"]+)['_\"]\\s*\\)/", $content, $m)) {
+                    return $m[1];
+                }
+            }
+        }
+
+        return 'Unknown';
     }
 
     /**
@@ -153,21 +245,55 @@ class PhpPsInfo
             'Web server' => [$this->getWebServer()],
             'PHP Type' => [
                 strpos(PHP_SAPI, 'cgi') !== false ?
-                'CGI with Apache Worker or another webserver' :
-                'Apache Module (low performance)'
+                    'CGI with Apache Worker or another webserver' :
+                    (strpos(PHP_SAPI, 'litespeed') !== false ? 'Litespeed (Better performance)' : 'Apache Module (low performance)')
             ],
         ];
 
-        $data['PHP Version'] = [
-            $this->requirements['versions']['php'],
-            $this->recommended['versions']['php'],
+        $currentPs = $this->getPrestaShopVersion();
+        $psNorm = $this->normalizePsVersion($currentPs);
+
+        // Static PS row color using a normalized version
+        $psStatus =
+            ($psNorm && isset($this->recommended['versions']['prestashop']) &&
+                $this->normalizePsVersion($this->recommended['versions']['prestashop']) &&
+                version_compare($psNorm, $this->normalizePsVersion($this->recommended['versions']['prestashop']), '>='))
+                ? self::TYPE_OK
+                : (($psNorm && isset($this->requirements['versions']['prestashop']) &&
+                $this->normalizePsVersion($this->requirements['versions']['prestashop']) &&
+                version_compare($psNorm, $this->normalizePsVersion($this->requirements['versions']['prestashop']), '>='))
+                ? self::TYPE_WARNING : self::TYPE_ERROR);
+
+        $data['PrestaShop Version'] = [
+            $this->requirements['versions']['prestashop'] ?? 'N/A',
+            $this->recommended['versions']['prestashop'] ?? 'N/A',
+            $currentPs,
+            $psStatus
+        ];
+
+        // Dynamic PHP bounds for the detected PS (now works for "1.6.1.23")
+        $phpBounds = $psNorm ? ($this->getPhpSupportForPs($psNorm) ?? null) : null;
+        $phpMin = $phpBounds['min'] ?? 'N/A'; // Required PHP for this PS version
+        $phpRec = $phpBounds['rec'] ?? 'N/A'; // Recommended PHP for this PS version
+        $phpCur = preg_match('~^\d+\.\d+~', PHP_VERSION, $m) ? $m[0] : 'N/A'; // Current PHP major.minor
+
+        if ($phpCur && $phpRec && version_compare($phpCur, $phpRec, '>')) {
+            $phpDynStatus = self::TYPE_ERROR; // Current PHP is higher than recommended
+        } elseif ($phpCur && $phpMin && version_compare($phpCur, $phpMin, '<')) {
+            $phpDynStatus = self::TYPE_ERROR; // Current PHP is lower than required
+        } elseif ($phpCur && $phpRec && version_compare($phpCur, $phpRec, '==')) {
+            $phpDynStatus = self::TYPE_OK; // Current PHP is the recommended version
+        } elseif ($phpCur && $phpMin && version_compare($phpCur, $phpMin, '>=') && version_compare($phpCur, $phpRec, '<')) {
+            $phpDynStatus = self::TYPE_WARNING; // Current PHP is not the last recommended version
+        } else {
+            $phpDynStatus = self::TYPE_ERROR; // Unknown state
+        }
+
+        $data['PHP Version for current PrestaShop Version'] = [
+            $phpMin,
+            $phpRec,
             PHP_VERSION,
-            version_compare(PHP_VERSION, $this->recommended['versions']['php'], '>=') ?
-            self::TYPE_OK : (
-                version_compare(PHP_VERSION, $this->requirements['versions']['php'], '>=') ?
-                self::TYPE_WARNING :
-                self::TYPE_ERROR
-            )
+            $phpDynStatus
         ];
 
         if (!extension_loaded('mysqli') || !is_callable('mysqli_connect')) {
@@ -186,14 +312,25 @@ class PhpPsInfo
             ];
         }
 
-        $data['Internet connectivity (Prestashop)'] = [
-            false,
-            true,
-            gethostbyname('www.prestashop.com') !== 'www.prestashop.com',
-            gethostbyname('www.prestashop.com') !== 'www.prestashop.com',
-        ];
+        $ok = (gethostbyname('www.prestashop.com') !== 'www.prestashop.com');
+        $data['Internet connectivity (Prestashop)'] = [false, true, $ok, $ok];
 
         return $data;
+    }
+
+    /**
+     * Normalize the PS version to "X.Y.Z" (drops patch number: "1.6.1.23" -> "1.6.1").
+     * Returns null if not a dotted numeric version.
+     */
+    protected function normalizePsVersion(?string $v): ?string
+    {
+        if (!is_string($v) || !preg_match('~^\d+(?:\.\d+)+$~', $v)) {
+            return null;
+        }
+        $parts = explode('.', $v);
+        $parts = array_slice($parts, 0, 3);        // keep at most 3 segments
+        while (count($parts) < 3) { $parts[] = '0'; } // pad to 3
+        return implode('.', $parts);
     }
 
     /**
@@ -205,16 +342,20 @@ class PhpPsInfo
     {
         $data = [];
         $vars = [
-            'Curl' => 'curl',
-            'Gd' => 'gd',
-            'Imagick' => 'imagick',
-            'Intl' => 'intl',
+            'BCMath Arbitrary Precision Mathematics' => 'bcmath',
+            'Client URL Library (Curl)' => 'curl',
+            'Image Processing and GD' => 'gd',
+            'Image Processing (ImageMagick)' => 'imagick',
+            'Human Language and Character Encoding Support (Iconv)' => 'iconv',
+            'Internationalization Functions (Intl)' => 'intl',
             'Memcache' => 'memcache',
             'Memcached' => 'memcached',
+            'Multibyte String (Mbstring)' => 'mbstring',
             'OpenSSL' => 'openssl',
-            'Fileinfo' => 'fileinfo',
-            'Json' => 'json',
-            'Pdo MySQL' => 'pdo_mysql',
+            'File Information (Fileinfo)' => 'fileinfo',
+            'JavaScript Object Notation (Json)' => 'json',
+            'PDO and MySQL Functions' => 'pdo_mysql',
+            'SimpleXML' => 'simplexml',
         ];
         foreach ($vars as $label => $var) {
             $value = extension_loaded($var);
@@ -239,6 +380,48 @@ class PhpPsInfo
         }
 
         return $data;
+    }
+
+    /**
+     * Map PrestaShop version to PHP minimal and recommended versions.
+     * Returns ['min' => 'x.y', 'rec' => 'x.y'] or null if unknown.
+     * Built from the provided compatibility matrix.
+     */
+    protected function getPhpSupportForPs(string $psVersion): ?array
+    {
+        $ps = $this->normalizePsVersion($psVersion);
+        if ($ps === null) { return null; }
+
+        // Normalize "1.x" -> "1.x.0"
+        if (preg_match('~^\d+\.\d+(\.\d+)?$~', $psVersion)) {
+            if (substr_count($psVersion, '.') === 1) {
+                $psVersion .= '.0';
+            }
+        } else {
+            return null;
+        }
+
+        // Rules from your table
+        $rules = [
+            ['min' => '1.2.0', 'max' => '1.5.9', 'req' => '5.2', 'rec' => '5.6'],
+            ['min' => '1.6.0', 'max' => '1.6.0', 'req' => '5.2', 'rec' => '7.0'],
+            ['min' => '1.6.1', 'max' => '1.6.9', 'req' => '5.2', 'rec' => '7.1'],
+            ['min' => '1.7.0', 'max' => '1.7.3', 'req' => '5.4', 'rec' => '7.1'],
+            ['min' => '1.7.4', 'max' => '1.7.4', 'req' => '5.6', 'rec' => '7.1'],
+            ['min' => '1.7.5', 'max' => '1.7.6', 'req' => '5.6', 'rec' => '7.2'],
+            ['min' => '1.7.7', 'max' => '1.7.7', 'req' => '7.1', 'rec' => '7.3'],
+            ['min' => '1.7.8', 'max' => '7.9.9', 'req' => '7.1', 'rec' => '7.4'],
+            ['min' => '8.0.0', 'max' => '8.9.9', 'req' => '7.2', 'rec' => '8.1'],
+            ['min' => '9.0.0', 'max' => '9.9.9', 'req' => '8.1', 'rec' => '8.3'],
+            // To be continued...
+        ];
+
+        foreach ($rules as $r) {
+            if (version_compare($psVersion, $r['min'], '>=') && version_compare($psVersion, $r['max'], '<=')) {
+                return ['min' => $r['req'], 'rec' => $r['rec']];
+            }
+        }
+        return null;
     }
 
     /**
@@ -314,7 +497,7 @@ class PhpPsInfo
         $data = [];
         foreach ($this->requirements['directories'] as $directory) {
             $directoryPath = getcwd() . DIRECTORY_SEPARATOR . trim($directory, '\\/');
-            $data[$directory] = [file_exists($directoryPath) && is_writable($directoryPath)];
+            $data[$directory] = file_exists($directoryPath) ? [is_writable($directoryPath)] : [null];
         }
 
         return $data;
@@ -345,23 +528,25 @@ class PhpPsInfo
      * Convert PHP variable (G/M/K) to bytes
      * Source: http://php.net/manual/fr/function.ini-get.php
      *
+     * @param mixed $value
+     *
      * @return integer
      */
-    public function toBytes($val)
+    public function toBytes($value)
     {
-        if (is_numeric($val)) {
-            return $val;
+        if (is_numeric($value)) {
+            return $value;
         }
 
-        $val = trim($val);
-        $val = (int) $val;
-        switch (strtolower($val[strlen($val)-1])) {
+        $value = trim($value);
+        $val = (int) $value;
+        switch (strtolower($value[strlen($value)-1])) {
             case 'g':
                 $val *= 1024;
-                // continue
+            // continue
             case 'm':
                 $val *= 1024;
-                // continue
+            // continue
             case 'k':
                 $val *= 1024;
         }
@@ -398,7 +583,7 @@ class PhpPsInfo
     public function toHtmlClass(array $data)
     {
         if (count($data) === 1 && !is_bool($data[0])) {
-            return 'table-info';
+            return self::TYPE_INFO_CLASS;
         }
 
 
@@ -417,14 +602,14 @@ class PhpPsInfo
         }
 
         if ($result === false) {
-            return 'table-danger';
+            return self::TYPE_ERROR_CLASS;
         }
 
         if ($result === null) {
-            return 'table-warning';
+            return self::TYPE_WARNING_CLASS;
         }
 
-        return 'table-success';
+        return self::TYPE_SUCCESS_CLASS;
     }
 
     /**
@@ -434,18 +619,12 @@ class PhpPsInfo
      */
     protected function getWebServer()
     {
-        if (stristr($_SERVER['SERVER_SOFTWARE'], 'Apache') !== false) {
-            return 'Apache';
-        } elseif (stristr($_SERVER['SERVER_SOFTWARE'], 'LiteSpeed') !== false) {
-            return 'Lite Speed';
-        } elseif (stristr($_SERVER['SERVER_SOFTWARE'], 'Nginx') !== false) {
-            return 'Nginx';
-        } elseif (stristr($_SERVER['SERVER_SOFTWARE'], 'lighttpd') !== false) {
-            return 'lighttpd';
-        } elseif (stristr($_SERVER['SERVER_SOFTWARE'], 'IIS') !== false) {
-            return 'Microsoft IIS';
-        }
-
+        $s = $_SERVER['SERVER_SOFTWARE'] ?? '';
+        if (stripos($s,'Apache')!==false) return 'Apache';
+        if (stripos($s,'LiteSpeed')!==false) return 'Lite Speed';
+        if (stripos($s,'Nginx')!==false) return 'Nginx';
+        if (stripos($s,'lighttpd')!==false) return 'lighttpd';
+        if (stripos($s,'IIS')!==false) return 'Microsoft IIS';
         return 'Not detected';
     }
 
@@ -491,162 +670,166 @@ $info->checkAuth();
 ?>
 <!doctype html>
 <html lang="en">
-    <head>
-        <meta charset="utf-8"/>
-        <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no"/>
-        <meta name="description" content=""/>
-        <meta name="author" content=""/>
-        <link rel="icon" href="../../../../favicon.ico"/>
+<head>
+    <meta charset="utf-8"/>
+    <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no"/>
+    <meta name="description" content=""/>
+    <meta name="author" content=""/>
+    <link rel="icon" href="../../../../favicon.ico"/>
 
-        <title>PHP PrestaShop Info</title>
-        <link href="https://stackpath.bootstrapcdn.com/bootstrap/4.1.1/css/bootstrap.min.css" rel="stylesheet" />
-        <style>
-            h1 {font-size:2rem;}
-        </style>
-    </head>
+    <title>PHP PrestaShop Info</title>
+    <link href="https://stackpath.bootstrapcdn.com/bootstrap/4.1.1/css/bootstrap.min.css" rel="stylesheet" />
+    <style>
+        h1 {font-size:2rem;}
+    </style>
+</head>
 
-    <body>
-        <nav class="navbar navbar-dark bg-dark flex-md-nowrap p-0 shadow">
-            <a class="navbar-brand col-sm-3 col-md-2 mr-0" href="#">PHP PrestaShop Info</a>
-        </nav>
+<body>
+<nav class="navbar navbar-dark bg-dark flex-md-nowrap p-0 shadow">
+    <a class="navbar-brand col-sm-3 col-md-2 mr-0" href="#">PHP PrestaShop Info</a>
+</nav>
 
-        <div class="container-fluid">
-            <div class="row justify-content-md-center">
-                <main role="main" class="col-8">
-                    <h1>General informations & tests PHP/MySQL Version</h1>
-                    <div class="table-responsive">
-                        <table class="table table-striped table-sm text-center">
-                            <thead>
-                                <tr>
-                                    <th class="text-left">#</th>
-                                    <th>Required</th>
-                                    <th>Recommended</th>
-                                    <th>Current</th>
-                                </tr>
-                            </thead>
-                            <tbody>
-                                <?php foreach ($info->getVersions() as $label => $data) : ?>
-                                    <?php if (count($data) === 1) : ?>
-                                        <tr>
-                                            <td class="text-left"><?php echo $label ?></td>
-                                            <td class="<?php echo $info->toHtmlClass($data); ?>" colspan="3"><?php echo $info->toString($data[0]) ?></td>
-                                        </tr>
-                                    <?php else : ?>
-                                        <tr>
-                                            <td class="text-left"><?php echo $label ?></td>
-                                            <td><?php echo $info->toString($data[0]) ?></td>
-                                            <td><?php echo $info->toString($data[1]) ?></td>
-                                            <td class="<?php echo $info->toHtmlClass($data); ?>"><?php echo $info->toString($data[2]) ?></td>
-                                        </tr>
-                                    <?php endif; ?>
-                                <?php endforeach; ?>
-                            </tbody>
-                        </table>
-                    </div>
-
-                    <h1>PHP Configuration</h1>
-
-                    <div class="table-responsive">
-                        <table class="table table-striped table-sm text-center">
-                            <thead>
-                                <tr>
-                                    <th class="text-left">#</th>
-                                    <th>Required</th>
-                                    <th>Recommended</th>
-                                    <th>Current</th>
-                                </tr>
-                            </thead>
-                            <tbody>
-                                <?php foreach ($info->getPhpConfig() as $label => $data) : ?>
-                                    <tr>
-                                        <td class="text-left"><?php echo $label ?></td>
-                                        <td><?php echo $info->toString($data[0]) ?></td>
-                                        <td><?php echo $info->toString($data[1]) ?></td>
-                                        <td class="<?php echo $info->toHtmlClass($data); ?>"><?php echo $info->toString($data[2]) ?></td>
-                                    </tr>
-                                <?php endforeach; ?>
-                            </tbody>
-                        </table>
-                    </div>
-
-                    <h1>PHP Extensions</h1>
-
-                    <div class="table-responsive">
-                        <table class="table table-striped table-sm text-center">
-                            <thead>
-                                <tr>
-                                    <th class="text-left">#</th>
-                                    <th>Required</th>
-                                    <th>Recommended</th>
-                                    <th>Current</th>
-                                </tr>
-                            </thead>
-                            <tbody>
-                                <?php foreach ($info->getPhpExtensions() as $label => $data) : ?>
-                                    <tr>
-                                        <td class="text-left"><?php echo $label ?></td>
-                                        <td><?php echo $info->toString($data[0]) ?></td>
-                                        <td><?php echo $info->toString($data[1]) ?></td>
-                                        <td class="<?php echo $info->toHtmlClass($data); ?>"><?php echo $info->toString($data[2]) ?></td>
-                                    </tr>
-                                <?php endforeach; ?>
-                            </tbody>
-                        </table>
-                    </div>
-
-                    <h1>Directories</h1>
-
-                    <div class="table-responsive">
-                        <table class="table table-striped table-sm text-center">
-                            <thead>
-                                <tr>
-                                    <th class="text-left">#</th>
-                                    <th>Is Writable</th>
-                                </tr>
-                            </thead>
-                            <tbody>
-                                <?php foreach ($info->getDirectories() as $label => $data) : ?>
-                                    <tr>
-                                        <td class="text-left"><?php echo $label ?></td>
-                                        <td class="<?php echo $info->toHtmlClass($data); ?>"><?php echo $info->toString($data[0]) ?></td>
-                                    </tr>
-                                <?php endforeach; ?>
-                            </tbody>
-                        </table>
-                    </div>
-
-                    <?php if (count($info->getServerModules()) > 0): ?>
-                        <h1>Apache Modules</h1>
-
-                        <div class="table-responsive">
-                            <table class="table table-striped table-sm text-center">
-                                <thead>
-                                    <tr>
-                                        <th class="text-left">#</th>
-                                        <th>Required</th>
-                                        <th>Recommended</th>
-                                        <th>Current</th>
-                                    </tr>
-                                </thead>
-                                <tbody>
-                                    <?php foreach ($info->getServerModules() as $label => $data) : ?>
-                                        <tr>
-                                            <td class="text-left"><?php echo $label ?></td>
-                                            <td><?php echo $info->toString($data[0]) ?></td>
-                                            <td><?php echo $info->toString($data[1]) ?></td>
-                                            <td class="<?php echo $info->toHtmlClass($data); ?>"><?php echo $info->toString($data[2]) ?></td>
-                                        </tr>
-                                    <?php endforeach; ?>
-                                </tbody>
-                            </table>
-                        </div>
-                    <?php endif; ?>
-                </main>
+<div class="container-fluid">
+    <div class="row justify-content-md-center">
+        <main role="main" class="col-8">
+            <h1>General information & PHP/MySQL Version</h1>
+            <div class="table-responsive">
+                <table class="table table-striped table-sm text-center">
+                    <thead>
+                    <tr>
+                        <th class="text-left">#</th>
+                        <th>Required</th>
+                        <th>Recommended</th>
+                        <th>Current</th>
+                    </tr>
+                    </thead>
+                    <tbody>
+                    <?php foreach ($info->getVersions() as $label => $data) : ?>
+                        <?php if (count($data) === 1) : ?>
+                            <tr>
+                                <td class="text-left"><?php echo $label ?></td>
+                                <td class="<?php echo $info->toHtmlClass($data); ?>" colspan="3"><?php echo $info->toString($data[0]) ?></td>
+                            </tr>
+                        <?php else : ?>
+                            <tr>
+                                <td class="text-left"><?php echo $label ?></td>
+                                <td><?php echo $info->toString($data[0]) ?></td>
+                                <td><?php echo $info->toString($data[1]) ?></td>
+                                <td class="<?php echo $info->toHtmlClass($data); ?>"><?php echo $info->toString($data[2]) ?></td>
+                            </tr>
+                        <?php endif; ?>
+                    <?php endforeach; ?>
+                    </tbody>
+                </table>
             </div>
-        </div>
 
-        <footer class="footer-copyright text-center py-3">
-            © <?php echo date('Y') ?> Copyright: <a href="https://prestashop.com/">PrestaShop</a>
-        </footer>
-    </body>
+            <h1>PHP Configuration</h1>
+
+            <div class="table-responsive">
+                <table class="table table-striped table-sm text-center">
+                    <thead>
+                    <tr>
+                        <th class="text-left">#</th>
+                        <th>Required</th>
+                        <th>Recommended</th>
+                        <th>Current</th>
+                    </tr>
+                    </thead>
+                    <tbody>
+                    <?php foreach ($info->getPhpConfig() as $label => $data) : ?>
+                        <tr>
+                            <td class="text-left"><?php echo $label ?></td>
+                            <td><?php echo $info->toString($data[0]) ?></td>
+                            <td><?php echo $info->toString($data[1]) ?></td>
+                            <td class="<?php echo $info->toHtmlClass($data); ?>"><?php echo $info->toString($data[2]) ?></td>
+                        </tr>
+                    <?php endforeach; ?>
+                    </tbody>
+                </table>
+            </div>
+
+            <h1>PHP Extensions</h1>
+
+            <div class="table-responsive">
+                <table class="table table-striped table-sm text-center">
+                    <thead>
+                    <tr>
+                        <th class="text-left">#</th>
+                        <th>Required</th>
+                        <th>Recommended</th>
+                        <th>Current</th>
+                    </tr>
+                    </thead>
+                    <tbody>
+                    <?php foreach ($info->getPhpExtensions() as $label => $data) : ?>
+                        <tr>
+                            <td class="text-left"><?php echo $label ?></td>
+                            <td><?php echo $info->toString($data[0]) ?></td>
+                            <td><?php echo $info->toString($data[1]) ?></td>
+                            <td class="<?php echo $info->toHtmlClass($data); ?>"><?php echo $info->toString($data[2]) ?></td>
+                        </tr>
+                    <?php endforeach; ?>
+                    </tbody>
+                </table>
+            </div>
+
+            <h1>Directories</h1>
+
+            <div class="table-responsive">
+                <table class="table table-striped table-sm text-center">
+                    <thead>
+                    <tr>
+                        <th class="text-left">#</th>
+                        <th>Is Writable</th>
+                    </tr>
+                    </thead>
+                    <tbody>
+                    <?php foreach ($info->getDirectories() as $label => $data) : ?>
+                        <tr>
+                            <td class="text-left"><?php echo $label ?></td>
+                            <?php if (null == $data[0]) : ?>
+                                <td class="<?php echo PhpPsInfo::TYPE_ERROR_CLASS; ?>">Directory not exists</td>
+                            <?php else : ?>
+                                <td class="<?php echo $info->toHtmlClass($data); ?>"><?php echo $info->toString($data[0]) ?></td>
+                            <?php endif; ?>
+                        </tr>
+                    <?php endforeach; ?>
+                    </tbody>
+                </table>
+            </div>
+
+            <?php if (count($info->getServerModules()) > 0): ?>
+                <h1>Apache Modules</h1>
+
+                <div class="table-responsive">
+                    <table class="table table-striped table-sm text-center">
+                        <thead>
+                        <tr>
+                            <th class="text-left">#</th>
+                            <th>Required</th>
+                            <th>Recommended</th>
+                            <th>Current</th>
+                        </tr>
+                        </thead>
+                        <tbody>
+                        <?php foreach ($info->getServerModules() as $label => $data) : ?>
+                            <tr>
+                                <td class="text-left"><?php echo $label ?></td>
+                                <td><?php echo $info->toString($data[0]) ?></td>
+                                <td><?php echo $info->toString($data[1]) ?></td>
+                                <td class="<?php echo $info->toHtmlClass($data); ?>"><?php echo $info->toString($data[2]) ?></td>
+                            </tr>
+                        <?php endforeach; ?>
+                        </tbody>
+                    </table>
+                </div>
+            <?php endif; ?>
+        </main>
+    </div>
+</div>
+
+<footer class="footer-copyright text-center py-3">
+    © <?php echo date('Y') ?> Copyright: <a href="https://prestashop.com/">PrestaShop</a>
+</footer>
+</body>
 </html>
